@@ -1,7 +1,6 @@
-version: '3.8'
+
 
 services:
-  # 1. MinIO - объектное хранилище (аналог S3)
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -9,60 +8,46 @@ services:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: password123
     ports:
-      - "9000:9000"  # S3 API порт
-      - "9001:9001"  # Web UI порт
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - ./data/minio:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
 
-  # 2. ClickHouse - колоночная БД для аналитики
   clickhouse:
     image: clickhouse/clickhouse-server:23.3-alpine
     ports:
-      - "8123:8123"  # HTTP интерфейс
-      - "9000:9000"  # Native протокол
+      - "8123:8123"
+      - "9009:9000"
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: admin
       CLICKHOUSE_PASSWORD: password123
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
-  # 3. Spark - для трансформаций данных
   spark-master:
-    image: bitnami/spark:3.5
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+    image: apache/spark:3.5.0
+    command: bin/spark-class org.apache.spark.deploy.master.Master
     ports:
-      - "8080:8080"  # Spark Web UI
-      - "7077:7077"  # Spark Master порт
+      - "8082:8080"
+      - "7077:7077"
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
 
   spark-worker:
-    image: bitnami/spark:3.5
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+    image: apache/spark:3.5.0
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       - spark-master
+    environment:
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_WEBUI_PORT: 8081
+    ports:
+      - "8083:8081"
 
-  # 4. Airflow - оркестрация
   postgres:
     image: postgres:13
     environment:
@@ -88,11 +73,6 @@ services:
     ports:
       - "8081:8080"
     command: webserver
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
 
   airflow-scheduler:
     image: apache/airflow:2.7.0
@@ -109,18 +89,16 @@ services:
       - ./logs:/opt/airflow/logs
     command: scheduler
 
-  # 5. Для удобства - администратор MinIO
   mc:
     image: minio/mc:latest
     depends_on:
       - minio
     entrypoint: >
       /bin/sh -c "
-      sleep 5;
+      sleep 10;
       /usr/bin/mc alias set myminio http://minio:9000 admin password123;
       /usr/bin/mc mb myminio/raw;
       /usr/bin/mc mb myminio/stg;
-      /usr/bin/mc anonymous set public myminio/raw;
-      /usr/bin/mc anonymous set public myminio/stg;
+      echo 'MinIO buckets created successfully';
       tail -f /dev/null
       "
